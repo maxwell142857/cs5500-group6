@@ -1,8 +1,9 @@
+import Game from "./Game";
+
 function App() {
   return (
     <div>
-      <h1>hello React!</h1>
-      <p>firsr react project</p>
+      <Game />
     </div>
   );
 }
