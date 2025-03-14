@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 
 export default function Game() {
-  const [question, setQuestion] = useState("Are you ready");
+  const [question, setQuestion] = useState("Are you ready?");
   const [progress, setProgress] = useState(0);
   const [isFinished, setIsFinished] = useState(false);
   const [result, setResult] = useState(null);
@@ -13,12 +13,12 @@ export default function Game() {
 
   const fetchQuestion = async () => {
     try {
-      const response = await fetch("/api/next-question"); // 请求后端
+      const response = await fetch("/api/next-question");
       const data = await response.json();
       setQuestion(data.question);
       setProgress(data.progress);
     } catch (error) {
-      console.error("获取问题失败", error);
+      console.error("Failed to fetch question", error);
     }
   };
 
@@ -40,30 +40,89 @@ export default function Game() {
         setProgress(data.progress);
       }
     } catch (error) {
-      console.error("提交回答失败", error);
+      console.error("Failed to submit answer", error);
     }
   };
 
   return (
-    <div className="flex flex-col items-center justify-center h-screen space-y-6">
+    <div style={{
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      height: "100vh",
+      background: "linear-gradient(to bottom, #e0f7fa, #80deea)",
+      color: "#333",
+      fontFamily: "Arial, sans-serif",
+      textAlign: "center",
+      padding: "20px"
+    }}>
       {/* 进度条 */}
-      <div className="w-64 bg-gray-200 h-2 rounded">
-        <div className="bg-blue-500 h-full rounded" style={{ width: `${(progress / 20) * 100}%` }} />
+      <div style={{
+        width: "80%",
+        maxWidth: "400px",
+        background: "#ddd",
+        borderRadius: "10px",
+        overflow: "hidden",
+        boxShadow: "0px 2px 5px rgba(0, 0, 0, 0.2)",
+        marginBottom: "20px"
+      }}>
+        <div style={{
+          height: "10px",
+          width: `${(progress / 20) * 100}%`,
+          background: "#007bff",
+          transition: "width 0.3s ease-in-out"
+        }}></div>
       </div>
 
       {/* 显示问题 */}
       {!isFinished ? (
         <>
-          <h1 className="text-2xl font-bold">{question}</h1>
-          <div className="flex space-x-4">
-            <button className="px-4 py-2 bg-green-500 text-white rounded" onClick={() => handleAnswer("yes")}>Yes</button>
-            <button className="px-4 py-2 bg-red-500 text-white rounded" onClick={() => handleAnswer("no")}>No</button>
-            <button className="px-4 py-2 bg-gray-500 text-white rounded" onClick={() => handleAnswer("not sure")}>Not Sure</button>
+          <div style={{
+            background: "#fff",
+            padding: "20px",
+            borderRadius: "10px",
+            boxShadow: "0px 4px 10px rgba(0, 0, 0, 0.1)",
+            maxWidth: "400px"
+          }}>
+            <h1 style={{ fontSize: "24px", fontWeight: "bold", marginBottom: "10px" }}>{question}</h1>
+          </div>
+
+          {/* 按钮 */}
+          <div style={{ display: "flex", gap: "10px", marginTop: "20px" }}>
+            <button onClick={() => handleAnswer("yes")} style={buttonStyle("green")}>Yes</button>
+            <button onClick={() => handleAnswer("no")} style={buttonStyle("red")}>No</button>
+            <button onClick={() => handleAnswer("not sure")} style={buttonStyle("gray")}>Not Sure</button>
           </div>
         </>
       ) : (
-        <h1 className="text-2xl font-bold">我猜你在想：{result} 🎉</h1>
+        <div style={{
+          background: "#fff",
+          padding: "20px",
+          borderRadius: "10px",
+          boxShadow: "0px 4px 10px rgba(0, 0, 0, 0.1)",
+          maxWidth: "400px"
+        }}>
+          <h1 style={{ fontSize: "26px", fontWeight: "bold", color: "#007bff" }}>🎉 I guess you were thinking of:</h1>
+          <h2 style={{ fontSize: "30px", fontWeight: "bold", marginTop: "10px", color: "#28a745" }}>{result}</h2>
+        </div>
       )}
     </div>
   );
 }
+
+// 按钮样式函数
+const buttonStyle = (color) => ({
+  padding: "10px 20px",
+  fontSize: "18px",
+  fontWeight: "bold",
+  borderRadius: "8px",
+  border: "none",
+  color: "#fff",
+  cursor: "pointer",
+  transition: "background 0.3s ease-in-out",
+  background: color === "green" ? "#28a745" : color === "red" ? "#dc3545" : "#6c757d",
+  boxShadow: "0px 2px 5px rgba(0, 0, 0, 0.2)",
+  outline: "none"
+});
+
