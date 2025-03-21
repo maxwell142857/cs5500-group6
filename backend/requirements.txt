@@ -1,0 +1,12 @@
+fastapi
+pydantic
+typing
+psycopg2
+contextlib
+pydub
+google-genai
+gtts
+json
+uuid
+SpeechRecognition
+redis
