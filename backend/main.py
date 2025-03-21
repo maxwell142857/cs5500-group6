@@ -1,18 +1,151 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
-import json
-import uuid
-from datetime import datetime
-import psycopg2
+from typing import Optional
+from datetime import datetime, timedelta
 from psycopg2.extras import DictCursor
-import redis
-import os
 from contextlib import contextmanager
-import random
-
+from pydub import AudioSegment
 from google import genai
+from gtts import gTTS 
+
+import json, uuid, psycopg2, redis, io, os, random, base64
+
+import speech_recognition as sr
+
+
+class APIRateLimiter:
+    def __init__(self, rpm_limit=15, rpd_limit=1500, redis_client=None, backup_file="rate_limiter_backup.json"):
+        self.rpm_limit = rpm_limit
+        self.rpd_limit = rpd_limit
+        self.redis = redis_client
+        self.backup_file = backup_file
+        self.last_backup = datetime.now()
+        self.backup_interval = timedelta(minutes=10)  # Backup every 10 minutes
+        
+        # Try to restore data on startup if Redis is empty
+        self.restore_from_backup()
+        
+    def check_and_increment(self):
+        now = datetime.now()
+        minute_key = f"api_limit:minute:{now.strftime('%Y-%m-%d-%H-%M')}"
+        day_key = f"api_limit:day:{now.strftime('%Y-%m-%d')}"
+        
+        # Use Redis pipeline for atomic operations
+        pipe = self.redis.pipeline()
+        
+        # Get current counts
+        pipe.get(minute_key)
+        pipe.get(day_key)
+        minute_count_str, day_count_str = pipe.execute()
+        
+        # Convert to integers (default to 0 if None)
+        minute_count = int(minute_count_str) if minute_count_str else 0
+        day_count = int(day_count_str) if day_count_str else 0
+
+        # Check limits
+        if minute_count >= self.rpm_limit:
+            raise HTTPException(status_code=429, detail="API rate limit exceeded (per minute)")
+        
+        if day_count >= self.rpd_limit:
+            raise HTTPException(status_code=429, detail="API rate limit exceeded (per day)")
+        
+        # Increment and set expiry
+        pipe.incr(minute_key)
+        pipe.incr(day_key)
+        
+        # Set expiry for minute counter (2 minutes to be safe)
+        pipe.expire(minute_key, 120)
+        
+        # Set expiry for day counter (48 hours to be safe)
+        pipe.expire(day_key, 172800)
+        
+        pipe.execute()
+        
+        # Create backup periodically
+        if now - self.last_backup > self.backup_interval:
+            self.create_backup()
+            self.last_backup = now
+            
+        return True
+        
+    def create_backup(self):
+        """Create a backup of the current rate limiting data"""
+        try:
+            # Get all rate limiter keys from Redis
+            minute_pattern = "api_limit:minute:*"
+            day_pattern = "api_limit:day:*"
+            
+            minute_keys = self.redis.keys(minute_pattern)
+            day_keys = self.redis.keys(day_pattern)
+            
+            backup_data = {
+                "timestamp": datetime.now().isoformat(),
+                "minute_limits": {},
+                "day_limits": {}
+            }
+            
+            # Get all minute counters
+            for key in minute_keys:
+                value = self.redis.get(key)
+                if value:
+                    backup_data["minute_limits"][key] = int(value)
+            
+            # Get all day counters
+            for key in day_keys:
+                value = self.redis.get(key)
+                if value:
+                    backup_data["day_limits"][key] = int(value)
+            
+            # Write to file
+            with open(self.backup_file, 'w') as f:
+                json.dump(backup_data, f)
+                
+            print(f"Rate limiter backup created at {datetime.now().isoformat()}")
+            
+        except Exception as e:
+            print(f"Error creating rate limiter backup: {e}")
+    
+    def restore_from_backup(self):
+        """Restore rate limiting data from backup file if Redis is empty"""
+        try:
+            # Check if Redis already has rate limiting data
+            has_data = bool(self.redis.keys("api_limit:*"))
+            
+            if not has_data and os.path.exists(self.backup_file):
+                with open(self.backup_file, 'r') as f:
+                    backup_data = json.load(f)
+                
+                # Check if backup is not too old (within 1 day)
+                backup_time = datetime.fromisoformat(backup_data["timestamp"])
+                if datetime.now() - backup_time < timedelta(days=1):
+                    pipe = self.redis.pipeline()
+                    
+                    # Restore minute counters that are still relevant
+                    now = datetime.now()
+                    current_minute = now.strftime('%Y-%m-%d-%H-%M')
+                    
+                    for key, value in backup_data["minute_limits"].items():
+                        key_time = key.split(":")[-1]
+                        if key_time == current_minute:  # Only restore current minute
+                            pipe.set(key, value)
+                            pipe.expire(key, 120)  # 2 minute expiry
+                    
+                    # Restore day counters
+                    current_day = now.strftime('%Y-%m-%d')
+                    for key, value in backup_data["day_limits"].items():
+                        key_day = key.split(":")[-1]
+                        if key_day == current_day:  # Only restore current day
+                            pipe.set(key, value)
+                            pipe.expire(key, 172800)  # 48 hour expiry
+                    
+                    pipe.execute()
+                    print(f"Rate limiter data restored from backup created at {backup_data['timestamp']}")
+                else:
+                    print("Backup file too old, not restoring")
+                    
+        except Exception as e:
+            print(f"Error restoring rate limiter from backup: {e}")
 
 
 # Configure database connection details
@@ -49,11 +182,12 @@ app.add_middleware(
 class StartGameRequest(BaseModel):
     domain: str  # Make domain required - user must specify what kind of thing they're thinking of
     user_id: Optional[int] = None
+    voice_enabled: Optional[bool] = False
+    voice_language: Optional[str] = 'en'
 
 class StartGameResponse(BaseModel):
     session_id: str
     message: str
-
 
 class QuestionResponse(BaseModel):
     session_id: str
@@ -71,7 +205,6 @@ class AnswerRequest(BaseModel):
 class AnswerResponse(BaseModel):
     session_id: str
     should_guess: bool
-    top_entities: List[Dict[str, Any]]
     questions_asked: int
 
 class GuessResponse(BaseModel):
@@ -93,6 +226,18 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     models_loaded: bool
+
+class VoiceInputRequest(BaseModel):
+    session_id: str
+    audio_data: str  # Base64 encoded audio data
+
+class VoiceOutputRequest(BaseModel):
+    session_id: str
+    text: str
+
+class VoiceOutputResponse(BaseModel):
+    audio_data: str  # Base64 encoded audio data
+    mime_type: str = "audio/mp3"
 
 # Database connection helpers
 @contextmanager
@@ -128,6 +273,13 @@ redis_client = redis.Redis(
     socket_timeout=5
 )
 
+api_rate_limiter = APIRateLimiter(
+    rpm_limit=15, 
+    rpd_limit=1500,
+    redis_client=redis_client,
+    backup_file="api_rate_limiter_backup.json"
+)
+
 # Session timeout (in seconds)
 SESSION_TIMEOUT = int(os.environ.get('SESSION_TIMEOUT', 3600))
 
@@ -136,20 +288,6 @@ def init_db():
     """Initialize database schema"""
     with get_db_connection() as conn:
         with get_db_cursor(conn) as cursor:
-            # Entities table
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS entities (
-                id SERIAL PRIMARY KEY,
-                name TEXT UNIQUE,
-                attributes JSONB,
-                domain TEXT,
-                guess_count INTEGER DEFAULT 0,
-                correct_guess_count INTEGER DEFAULT 0,
-                last_updated TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            ''')
-            
             # Questions table
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS questions (
@@ -164,17 +302,7 @@ def init_db():
             )
             ''')
             
-            # Users table
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                username TEXT UNIQUE,
-                preferences JSONB,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            ''')
-            
-            # Game history table
+            # Game history table - removed users foreign key
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS game_history (
                 id TEXT PRIMARY KEY,
@@ -184,8 +312,7 @@ def init_db():
                 was_correct BOOLEAN,
                 questions_count INTEGER,
                 duration INTEGER,
-                completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (id)
+                completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             ''')
             
@@ -203,71 +330,41 @@ def init_db():
             )
             ''')
             
+            # Domain questions table for caching
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS domain_questions (
+                id SERIAL PRIMARY KEY,
+                domain TEXT,
+                question_id INTEGER,
+                position INTEGER,
+                usage_count INTEGER DEFAULT 0,
+                effectiveness REAL DEFAULT 0.5,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (question_id) REFERENCES questions (id)
+            )
+            ''')
+            
+            # Domain guesses table for caching successful guesses
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS domain_guesses (
+                id SERIAL PRIMARY KEY,
+                domain TEXT,
+                entity_name TEXT,
+                success_count INTEGER DEFAULT 0,
+                fail_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+            
             # Create indices
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_entity_domain ON entities (domain)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_entity_name ON entities (name)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_domain_questions ON domain_questions (domain, position)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_domain_questions_effectiveness ON domain_questions (effectiveness DESC)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_domain_guesses ON domain_guesses (domain)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_domain_guesses_success ON domain_guesses (success_count DESC)')
             
             conn.commit()
 
 # Database operations
-def get_entities(domain=None):
-    """Get entities, optionally filtered by domain"""
-    with get_db_connection() as conn:
-        with get_db_cursor(conn) as cursor:
-            if domain:
-                cursor.execute(
-                    "SELECT name, attributes FROM entities WHERE domain = %s",
-                    (domain,)
-                )
-            else:
-                cursor.execute("SELECT name, attributes FROM entities")
-            
-            results = cursor.fetchall()
-            return {row['name']: row['attributes'] for row in results}
-
-def get_questions():
-    """Get all questions ordered by information gain"""
-    with get_db_connection() as conn:
-        with get_db_cursor(conn) as cursor:
-            cursor.execute(
-                "SELECT id, question_text, feature, information_gain FROM questions "
-                "ORDER BY information_gain DESC"
-            )
-            return cursor.fetchall()
-
-def create_session(domain=None, user_id=None, use_ai=True):
-    """Create a new game session"""
-    session_id = str(uuid.uuid4())
-    
-    # Get entities, optionally filtered by domain
-    entities = get_entities(domain)
-    
-    # For a dynamic learning system, we need to handle the case where there are no entities yet
-    entity_probabilities = {}
-    if entities:
-        entity_probabilities = {entity: 1.0/len(entities) for entity in entities}
-    
-    state = {
-        'domain': domain,
-        'user_id': user_id,
-        'use_ai': use_ai,
-        'questions_asked': 0,
-        'entity_probabilities': entity_probabilities,
-        'asked_features': [],
-        'question_history': [],
-        'no_entities': len(entities) == 0,  # Flag to indicate if we're starting with no entities
-        'start_time': datetime.now().timestamp()
-    }
-    
-    # Store in Redis with expiration
-    redis_client.setex(
-        f"session:{session_id}", 
-        SESSION_TIMEOUT,
-        json.dumps(state)
-    )
-    
-    return session_id
-
 def get_session(session_id):
     """Get session state"""
     state_json = redis_client.get(f"session:{session_id}")
@@ -283,114 +380,11 @@ def update_session(session_id, state):
         json.dumps(state)
     )
 
-def record_question(session_id, question_id, answer):
-    """Record a question asked during a session"""
-    state = get_session(session_id)
-    if not state:
-        return False
-    
-    # Add to question history
-    question_record = {
-        'question_id': question_id,
-        'answer': answer,
-        'timestamp': datetime.now().timestamp()
-    }
-    state['question_history'].append(question_record)
-    
-    # Update question stats
-    with get_db_connection() as conn:
-        with get_db_cursor(conn) as cursor:
-            cursor.execute(
-                "UPDATE questions SET ask_count = ask_count + 1, last_used = %s WHERE id = %s",
-                (datetime.now(), question_id)
-            )
-            conn.commit()
-    
-    # Update session
-    update_session(session_id, state)
-    return True
-
-def end_session(session_id, target_entity, was_correct, entity_type=None):
-    """End a game session and record results"""
-    state = get_session(session_id)
-    if not state:
-        return False
-    
-    # Calculate duration
-    duration = int(datetime.now().timestamp() - state['start_time'])
-    
-    with get_db_connection() as conn:
-        with get_db_cursor(conn) as cursor:
-            # Record game in history
-            cursor.execute(
-                "INSERT INTO game_history (id, user_id, target_entity, domain, was_correct, "
-                "questions_count, duration) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (session_id, state.get('user_id'), target_entity, 
-                state.get('domain'), was_correct, state['questions_asked'], duration)
-            )
-            
-            # Record questions
-            for i, q_record in enumerate(state['question_history']):
-                cursor.execute(
-                    "INSERT INTO game_questions (game_id, question_id, answer, ask_order, timestamp) "
-                    "VALUES (%s, %s, %s, %s, %s)",
-                    (session_id, q_record['question_id'], q_record['answer'], i, 
-                    datetime.fromtimestamp(q_record['timestamp']))
-                )
-            
-            # Update entity stats or create new entity
-            cursor.execute(
-                "SELECT id FROM entities WHERE name = %s",
-                (target_entity,)
-            )
-            entity_result = cursor.fetchone()
-            
-            if entity_result:
-                # Entity exists, update stats
-                cursor.execute(
-                    "UPDATE entities SET guess_count = guess_count + 1, "
-                    "correct_guess_count = correct_guess_count + %s, "
-                    "last_updated = %s WHERE id = %s",
-                    (1 if was_correct else 0, datetime.now(), entity_result[0])
-                )
-            else:
-                # New entity, create it based on the yes answers
-                attributes = extract_attributes_from_history(state['question_history'])
-                cursor.execute(
-                    "INSERT INTO entities (name, attributes, domain, last_updated) VALUES (%s, %s, %s, %s)",
-                    (target_entity, json.dumps(attributes), state.get('domain') or entity_type, datetime.now())
-                )
-            
-            conn.commit()
-    
-    # Remove session from Redis
-    redis_client.delete(f"session:{session_id}")
-    
-    return True
-
-def extract_attributes_from_history(question_history):
-    """Extract attributes from question history based on 'yes' answers"""
-    attributes = {"features": []}
-    
-    with get_db_connection() as conn:
-        with get_db_cursor(conn) as cursor:
-            for record in question_history:
-                if record['answer'].lower() in ['yes', 'y']:
-                    # Get the feature for this question
-                    cursor.execute(
-                        "SELECT feature FROM questions WHERE id = %s",
-                        (record['question_id'],)
-                    )
-                    result = cursor.fetchone()
-                    if result:
-                        attributes["features"].append(result[0])
-    
-    return attributes
 
 # Initialize database on startup
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database and models on startup"""
+    """Initialize database on startup"""
     # Initialize database
     init_db()
     
@@ -407,6 +401,8 @@ async def start_game(request: StartGameRequest):
     state = {
         'domain': request.domain,
         'user_id': request.user_id,
+        'voice_enabled': request.voice_enabled,
+        'voice_language': request.voice_language,
         'questions_asked': 0,
         'question_history': [],
         'asked_questions': [],  # Store question texts to avoid repeats
@@ -428,82 +424,139 @@ async def start_game(request: StartGameRequest):
 # Question endpoint that uses only AI to generate questions
 @app.get("/api/get-question/{session_id}", response_model=QuestionResponse)
 async def get_question(session_id: str):
-    """Get the next AI-generated question for a session"""
+    """Get the next question for a session, prioritizing cached questions"""
     state = get_session(session_id)
     if not state:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    # Get domain
+    # Get domain and tracking data
     domain = state.get('domain', 'thing')
-    
-    # Get all questions that have already been asked in this session
     asked_questions = state.get('asked_questions', [])
+    questions_asked = state['questions_asked']
     
-    # Use past Q&A to create context
-    context = ""
-    for q_record in state['question_history']:
-        context += f"Q: {q_record['question']} A: {q_record['answer']}. "
+    # Try to use cached questions first
+    with get_db_connection() as conn:
+        with get_db_cursor(conn) as cursor:
+            # Look for appropriate cached questions for this domain and position
+            cursor.execute(
+                """SELECT dq.question_id, q.question_text 
+                FROM domain_questions dq
+                JOIN questions q ON dq.question_id = q.id
+                WHERE dq.domain = %s 
+                AND dq.position = %s
+                AND q.question_text NOT IN %s
+                ORDER BY dq.effectiveness DESC, dq.usage_count DESC
+                LIMIT 1""",
+                (domain, questions_asked, tuple(asked_questions) if asked_questions else ('',))
+            )
+            cached_question = cursor.fetchone()
+            
+            if cached_question:
+                # Use cached question
+                question_id = cached_question['question_id']
+                question_text = cached_question['question_text']
+                
+                # Update usage count
+                cursor.execute(
+                    "UPDATE domain_questions SET usage_count = usage_count + 1 WHERE question_id = %s AND domain = %s",
+                    (question_id, domain)
+                )
+                conn.commit()
+                
+                # Update state
+                state['asked_questions'] = state.get('asked_questions', []) + [question_text]
+                state['current_question_id'] = question_id
+                update_session(session_id, state)
+                
+                return {
+                    "session_id": session_id,
+                    "question_id": question_id,
+                    "question": question_text,
+                    "questions_asked": questions_asked,
+                    "should_guess": questions_asked >= 8
+                }
     
-    # Generate a new question using AI
-    max_attempts = 5
-    for attempt in range(max_attempts):
-        # Create an appropriate prompt based on progress
+    # Try to generate using AI with proper fallbacks
+    try:
+        # Check API rate limits
+        api_rate_limiter.check_and_increment()
+        
+        # Use past Q&A to create context
+        context = ""
+        for q_record in state['question_history']:
+            context += f"Q: {q_record['question']} A: {q_record['answer']}. "
+        
+        # Generate a new question using AI
         if len(state['question_history']) == 0:
-            # First question should be broad
             prompt = f"Ask a single yes/no question to identify a {domain}. The question must start with 'Is', 'Are', 'Does', 'Do', 'Can', 'Has', or 'Have'."
         else:
-            # Later questions should consider previous answers
             prompt = f"Based on these previous questions and answers: {context} Ask a new yes/no question to identify a {domain}. The question must start with 'Is', 'Are', 'Does', 'Do', 'Can', 'Has', or 'Have'."
         
         try:
             response = chat.send_message(prompt)
-            question_text = response.text
-
-            # Check if this question already exists in the database
-            with get_db_connection() as conn:
-                with get_db_cursor(conn) as cursor:
-                    cursor.execute(
-                        "SELECT id FROM questions WHERE question_text = %s",
-                        (question_text,)
-                    )
-                    existing_question = cursor.fetchone()
-                    
-                    if existing_question:
-                        # Use existing question ID
-                        question_id = existing_question['id']
-                    else:
-                        # Insert new question
+            question_text = response.text.strip()
+            
+            # Validate and clean up the question
+            if is_valid_yes_no_question(question_text):
+                # Check if this question already exists in the database
+                with get_db_connection() as conn:
+                    with get_db_cursor(conn) as cursor:
                         cursor.execute(
-                            "INSERT INTO questions (question_text, feature, last_used) VALUES (%s, %s, %s) RETURNING id",
-                            (question_text, "ai_generated", datetime.now())
+                            "SELECT id FROM questions WHERE question_text = %s",
+                            (question_text,)
                         )
-                        question_id = cursor.fetchone()[0]
-                    
-                    conn.commit()
-            
-            # Update state to track this question was asked
-            state['asked_questions'].append(question_text)
-            update_session(session_id, state)
-            
-            return {
-                "session_id": session_id,
-                "question_id": question_id,
-                "question": question_text,
-                "questions_asked": state['questions_asked'],
-                "should_guess": state['questions_asked'] >= 8  # Make a guess after 8 questions
-            }
-
+                        existing_question = cursor.fetchone()
+                        
+                        if existing_question:
+                            # Use existing question ID
+                            question_id = existing_question['id']
+                        else:
+                            # Insert new question
+                            cursor.execute(
+                                "INSERT INTO questions (question_text, feature, last_used) VALUES (%s, %s, %s) RETURNING id",
+                                (question_text, "ai_generated", datetime.now())
+                            )
+                            question_id = cursor.fetchone()[0]
+                        
+                        # Store in domain_questions for future use
+                        cursor.execute(
+                            "INSERT INTO domain_questions (domain, question_id, position) VALUES (%s, %s, %s)",
+                            (domain, question_id, questions_asked)
+                        )
+                        
+                        conn.commit()
+                
+                # Update state to track this question was asked
+                state['asked_questions'] = state.get('asked_questions', []) + [question_text]
+                state['current_question_id'] = question_id
+                update_session(session_id, state)
+                
+                return {
+                    "session_id": session_id,
+                    "question_id": question_id,
+                    "question": question_text,
+                    "questions_asked": questions_asked,
+                    "should_guess": questions_asked >= 8
+                }
         except Exception as e:
-            print(f"Error generating question, attempt {attempt+1}: {e}")
+            print(f"Error generating question: {e}")
+    except HTTPException as e:
+        if e.status_code == 429:
+            # Rate limiting handled correctly
+            print("Reached API usage limit")
+        else:
+            raise e
+    except Exception as e:
+        print(f"Unexpected error in get_question: {e}")
     
-    # If we've exhausted all attempts, create a super-simple emergency question
+    # FALLBACK: Use emergency question for any issue
     emergency_question = create_emergency_question(domain, len(asked_questions))
     
     # Make sure even the emergency question isn't a repeat
     while emergency_question in asked_questions:
         emergency_question = create_emergency_question(domain, len(asked_questions) + random.randint(1, 100))
     
-    # Check if emergency question exists in database
+    # Store the emergency question in database
     with get_db_connection() as conn:
         with get_db_cursor(conn) as cursor:
             cursor.execute(
@@ -513,29 +566,36 @@ async def get_question(session_id: str):
             existing_question = cursor.fetchone()
             
             if existing_question:
-                # Use existing question ID
                 question_id = existing_question['id']
             else:
-                # Insert new question
                 cursor.execute(
                     "INSERT INTO questions (question_text, feature, last_used) VALUES (%s, %s, %s) RETURNING id",
                     (emergency_question, "emergency", datetime.now())
                 )
                 question_id = cursor.fetchone()[0]
             
+            cursor.execute(
+                "INSERT INTO domain_questions (domain, question_id, position) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                (domain, question_id, questions_asked)
+            )
+            
             conn.commit()
     
-    # Update state to track this question
-    state['asked_questions'].append(emergency_question)
+    # Update state
+    state['asked_questions'] = state.get('asked_questions', []) + [emergency_question]
+    state['current_question_id'] = question_id
     update_session(session_id, state)
     
+    # Always ensure a valid response is returned
     return {
         "session_id": session_id,
         "question_id": question_id,
         "question": emergency_question,
-        "questions_asked": state['questions_asked'],
-        "should_guess": state['questions_asked'] >= 8  # Make a guess after 8 questions
+        "questions_asked": questions_asked,
+        "should_guess": questions_asked >= 8,
+        "message": "Using fallback question due to generation issues."
     }
+
 
 def is_valid_yes_no_question(question):
     """Validate that a question is a proper yes/no question"""
@@ -614,7 +674,6 @@ async def submit_answer(request: AnswerRequest):
     return {
         "session_id": session_id,
         "should_guess": should_guess,
-        "top_entities": [],  # We'll determine entities at guess time using AI
         "questions_asked": state['questions_asked']
     }
 
@@ -627,6 +686,35 @@ async def make_guess(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     
     domain = state.get('domain', 'thing')
+
+    # Create answer pattern for lookup
+    answer_pattern = {}
+    for q_record in state['question_history']:
+        answer_pattern[q_record['question_id']] = q_record['answer']
+    
+    # Try to find a similar pattern in previous successful games
+    with get_db_connection() as conn:
+        with get_db_cursor(conn) as cursor:
+            # Get successful guesses for this domain
+            cursor.execute(
+                """SELECT entity_name, success_count 
+                FROM domain_guesses 
+                WHERE domain = %s 
+                ORDER BY success_count DESC
+                LIMIT 5""",
+                (domain,)
+            )
+            cached_guesses = cursor.fetchall()
+            
+            if cached_guesses:
+                # Use the most successful guess
+                guess = cached_guesses[0]['entity_name']
+                
+                return {
+                    "session_id": session_id,
+                    "guess": guess,
+                    "questions_asked": state['questions_asked']
+                }
     
     # Create a comprehensive context from all Q&A history
     qa_context = ""
@@ -636,7 +724,6 @@ async def make_guess(session_id: str):
             qa_context += f"Q: {q_record['question']} A: {q_record['answer']}. "
     
     # Use the question generator to make a specific guess
-
     try:
         # Create a direct prompt that asks for a specific name
         guess_prompt = f"Based on these yes/no questions and answers about a {domain}: {qa_context} What specific {domain} is it? Name the exact {domain}:"
@@ -677,6 +764,74 @@ async def make_guess(session_id: str):
 async def submit_result(request: ResultRequest):
     """Submit the final result of a game"""
     session_id = request.session_id
+    was_correct = request.was_correct
+    actual_entity = request.actual_entity
+    
+    # Get session before deleting
+    state = get_session(session_id)
+    
+    if state:
+        domain = state.get('domain', 'thing')
+        
+        # Update question effectiveness based on result
+        with get_db_connection() as conn:
+            with get_db_cursor(conn) as cursor:
+                # Update question effectiveness for each asked question
+                for q_record in state['question_history']:
+                    cursor.execute(
+                        """UPDATE domain_questions 
+                        SET effectiveness = effectiveness + %s 
+                        WHERE domain = %s AND question_id = %s""",
+                        (0.1 if was_correct else -0.05, domain, q_record['question_id'])
+                    )
+                
+                # Update or insert guess statistics
+                if was_correct:
+                    # Get the current guess that was correct
+                    cursor.execute(
+                        """SELECT id FROM domain_guesses 
+                        WHERE domain = %s AND entity_name = %s""",
+                        (domain, actual_entity)
+                    )
+                    existing_guess = cursor.fetchone()
+                    
+                    if existing_guess:
+                        cursor.execute(
+                            """UPDATE domain_guesses 
+                            SET success_count = success_count + 1 
+                            WHERE id = %s""",
+                            (existing_guess['id'],)
+                        )
+                    else:
+                        cursor.execute(
+                            """INSERT INTO domain_guesses 
+                            (domain, entity_name, success_count) 
+                            VALUES (%s, %s, 1)""",
+                            (domain, actual_entity)
+                        )
+                else:
+                    # If we know what the correct answer was
+                    if actual_entity:
+                        cursor.execute(
+                            """SELECT id FROM domain_guesses 
+                            WHERE domain = %s AND entity_name = %s""",
+                            (domain, actual_entity)
+                        )
+                        existing_guess = cursor.fetchone()
+                        
+                        if existing_guess:
+                            # We guessed it before but failed this time
+                            pass
+                        else:
+                            # New entity we've never seen before
+                            cursor.execute(
+                                """INSERT INTO domain_guesses 
+                                (domain, entity_name, success_count) 
+                                VALUES (%s, %s, 0)""",
+                                (domain, actual_entity)
+                            )
+                
+                conn.commit()
     
     # End the session in Redis
     redis_client.delete(f"session:{session_id}")
@@ -685,3 +840,105 @@ async def submit_result(request: ResultRequest):
         "status": "success",
         "message": "Thank you for playing!"
     }
+
+@app.post("/api/toggle-voice")
+async def toggle_voice(session_id: str, enable: bool = True, language: str = 'en'):
+    """Enable or disable voice chat for a session"""
+    state = get_session(session_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    state['voice_enabled'] = enable
+    state['voice_language'] = language
+    update_session(session_id, state)
+    
+    return {"status": "success", "voice_enabled": enable}
+
+@app.post("/api/voice-input", response_model=QuestionResponse)
+async def process_voice_input(request: VoiceInputRequest):
+    """Process voice input and convert to text answer"""
+    session_id = request.session_id
+    
+    # Get session state
+    state = get_session(session_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Process audio data
+    try:
+        # Decode base64 audio data
+        audio_data = base64.b64decode(request.audio_data)
+        
+        # Convert to WAV format for recognition
+        audio = AudioSegment.from_file(io.BytesIO(audio_data))
+        wav_data = io.BytesIO()
+        audio.export(wav_data, format="wav")
+        wav_data.seek(0)
+        
+        # Use speech recognition
+        recognizer = sr.Recognizer()
+        with sr.AudioFile(wav_data) as source:
+            audio_data = recognizer.record(source)
+            text = recognizer.recognize_google(audio_data)
+        
+        # Process the recognized text to determine yes/no/don't know
+        lower_text = text.lower()
+        if any(word in lower_text for word in ['yes', 'yeah', 'yep', 'correct']):
+            answer = 'yes'
+        elif any(word in lower_text for word in ['no', 'nope', 'not']):
+            answer = 'no'
+        else:
+            answer = 'unknown'
+        
+        # Get the current question
+        current_question_id = state.get('current_question_id')
+        
+        if not current_question_id:
+            raise HTTPException(status_code=400, detail="No current question to answer")
+        
+        # Create an answer request to reuse existing logic
+        answer_request = AnswerRequest(
+            session_id=session_id,
+            question_id=current_question_id,
+            answer=answer
+        )
+        
+        # Process the answer using the existing endpoint
+        return await submit_answer(answer_request)
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing voice input: {str(e)}")
+
+@app.post("/api/voice-output", response_model=VoiceOutputResponse)
+async def generate_voice_output(request: VoiceOutputRequest):
+    """Generate voice output from text"""
+    session_id = request.session_id
+    
+    # Get session state for language preference
+    state = get_session(session_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Get language from session state
+    language = state.get('voice_language', 'en')
+    
+    try:
+        # Generate speech using gTTS
+        tts = gTTS(text=request.text, lang=language)
+        mp3_fp = io.BytesIO()
+        tts.write_to_fp(mp3_fp)
+        mp3_fp.seek(0)
+        
+        # Encode as base64
+        audio_data = base64.b64encode(mp3_fp.read()).decode('utf-8')
+        
+        return {"audio_data": audio_data, "mime_type": "audio/mp3"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating speech: {str(e)}")
+
+@app.on_event("shutdown")
+async def startup_event():
+    """Initialize database on startup"""
+    # Initialize database
+    api_rate_limiter.create_backup()
