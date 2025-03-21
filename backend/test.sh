@@ -24,7 +24,7 @@ status() {
 
 # Function to print user prompts
 prompt() {
-    echo -e "${YELLOW}? $1${NC}"
+    echo -e "${YELLOW} $1${NC}"
 }
 
 # Function to print info messages
@@ -140,9 +140,8 @@ play_game() {
         
         # Extract guess
         GUESS=$(echo "$GUESS_RESPONSE" | grep -o '"guess":"[^"]*' | cut -d'"' -f4)
-        CONFIDENCE=$(echo "$GUESS_RESPONSE" | grep -o '"confidence":[^,}]*' | cut -d':' -f2)
         
-        info "I think it's a: ${YELLOW}$GUESS${NC} (confidence: $CONFIDENCE)"
+        info "I think it's a: ${YELLOW}$GUESS${NC}"
         prompt "Am I correct? (yes/no)"
         read IS_CORRECT
         
