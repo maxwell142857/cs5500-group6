@@ -1,0 +1,93 @@
+Base URL: http://localhost:8000
+
+1. Start a Game
+POST /api/start-game
+
+Request Body (JSON):
+{
+  "domain": "animal",       // Required: category of the entity (e.g., animal, movie)
+  "user_id": 1              
+}
+
+Response:
+{
+  "session_id": "string",
+  "message": "Think of an animal and I'll try to guess it!"
+}
+
+2. Get Next Question
+GET /api/get-question/{session_id}
+
+Path Parameter:
+  session_id (string) - Required
+
+Response:
+{
+  "session_id": "string",
+  "question_id": 1,
+  "question": "Is it a mammal?",
+  "questions_asked": 1,
+  "should_guess": false
+}
+
+3. Submit an Answer
+POST /api/submit-answer
+
+Request Body (JSON):
+{
+  "session_id": "string",
+  "question_id": 1,
+  "answer": "yes"     // "yes", "no", or "maybe"
+}
+
+Response:
+{
+  "session_id": "string",
+  "should_guess": false,
+  "top_entities": [],
+  "questions_asked": 2
+}
+
+4. Make a Guess
+GET /api/make-guess/{session_id}
+
+Path Parameter:
+  session_id (string) - Required
+
+Response:
+{
+  "session_id": "string",
+  "guess": "Elephant",
+  "questions_asked": 8
+}
+
+5. Submit Game Result
+POST /api/submit-result
+
+Request Body (JSON):
+{
+  "session_id": "string",
+  "was_correct": true,            // Whether the AI guessed correctly
+  "actual_entity": "Elephant",    // The real entity the user was thinking of
+  "entity_type": "animal"         // The domain (e.g., animal, movie, etc.)
+}
+
+Response:
+{
+  "status": "success",
+  "message": "Thank you for playing!"
+}
+
+Game Flow Summary
+1. Start a game:       POST /api/start-game
+2. Repeated:
+   - Get question:     GET /api/get-question/{session_id}
+   - Submit answer:    POST /api/submit-answer
+3. When should_guess == true:
+   - Make guess:       GET /api/make-guess/{session_id}
+4. Submit result:      POST /api/submit-result
+
+Notes:
+1 new function: front end should generate user_id
+2 new function: when "Start a Game", front end should choose a category
+3 new function: when "Submit Game Result", allow user to tell the right answer
