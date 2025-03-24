@@ -20,7 +20,7 @@ GEMINI_MODELS = [
         "name": "gemma-3-27b-it",  
         "rpm_limit": 30,
         "rpd_limit": 14400,
-        "client": None  # Will be initialized on startup
+        "client": None  
     },
     {
         "name": "gemini-2.0-flash",
@@ -1065,7 +1065,7 @@ async def toggle_voice(session_id: str, enable: bool = True, language: str = 'en
     
     return {"status": "success", "voice_enabled": enable}
 
-@app.post("/api/voice-input", response_model=QuestionResponse)
+@app.post("/api/voice-input", response_model=AnswerResponse)
 async def process_voice_input(request: VoiceInputRequest):
     """Process voice input and convert to text answer"""
     session_id = request.session_id
