@@ -8,57 +8,115 @@ from contextlib import contextmanager
 from pydub import AudioSegment
 from google import genai
 from gtts import gTTS 
+from collections import deque
 
 import json, uuid, psycopg2, redis, io, os, random, base64
 
 import speech_recognition as sr
 
+# Define available Gemini models with their rate limits
+GEMINI_MODELS = [
+    {
+        "name": "gemma-3-27b-it",  
+        "rpm_limit": 30,
+        "rpd_limit": 14400,
+        "client": None  # Will be initialized on startup
+    },
+    {
+        "name": "gemini-2.0-flash",
+        "rpm_limit": 15,
+        "rpd_limit": 1500,
+        "client": None
+    },
+    {
+        "name": "gemini-2.0-flash-lite",
+        "rpm_limit": 30,
+        "rpd_limit": 1500,
+        "client": None
+    },
+    {
+        "name": "gemini-1.5-flash",
+        "rpm_limit": 15,
+        "rpd_limit": 1500,
+        "client": None
+    }
+]
 
 class APIRateLimiter:
-    def __init__(self, rpm_limit=15, rpd_limit=1500, redis_client=None, backup_file="rate_limiter_backup.json"):
-        self.rpm_limit = rpm_limit
-        self.rpd_limit = rpd_limit
+    def __init__(self, models_config, redis_client=None, backup_file="rate_limiter_backup.json"):
+        self.models = models_config
         self.redis = redis_client
         self.backup_file = backup_file
         self.last_backup = datetime.now()
-        self.backup_interval = timedelta(minutes=10)  # Backup every 10 minutes
+        self.backup_interval = timedelta(minutes=10)
+        self.current_model_index = 0
+        
+        # Initialize a queue for model rotation to ensure we don't immediately reuse a model
+        self.model_rotation_queue = deque(range(len(self.models)))
         
         # Try to restore data on startup if Redis is empty
         self.restore_from_backup()
-        
-    def check_and_increment(self):
+    
+    def get_current_model(self):
+        """Get the current Gemini model"""
+        return self.models[self.current_model_index]
+    
+    def check_and_increment(self, model_index=None):
+        """Check rate limits with minimal Redis storage"""
+        if model_index is not None:
+            model = self.models[model_index]
+        else:
+            model = self.models[self.current_model_index]
+            
         now = datetime.now()
-        minute_key = f"api_limit:minute:{now.strftime('%Y-%m-%d-%H-%M')}"
-        day_key = f"api_limit:day:{now.strftime('%Y-%m-%d')}"
+        current_minute = now.strftime('%Y-%m-%d-%H-%M')
+        current_day = now.strftime('%Y-%m-%d')
+        
+        minute_key = f"rate:{model['name']}:minute"
+        day_key = f"rate:{model['name']}:day"
+        last_minute_key = f"rate:{model['name']}:last_minute"
+        last_day_key = f"rate:{model['name']}:last_day"
         
         # Use Redis pipeline for atomic operations
         pipe = self.redis.pipeline()
         
-        # Get current counts
+        # Get current counts and last timestamps
         pipe.get(minute_key)
         pipe.get(day_key)
-        minute_count_str, day_count_str = pipe.execute()
+        pipe.get(last_minute_key)
+        pipe.get(last_day_key)
+        minute_count_str, day_count_str, last_minute, last_day = pipe.execute()
         
         # Convert to integers (default to 0 if None)
         minute_count = int(minute_count_str) if minute_count_str else 0
         day_count = int(day_count_str) if day_count_str else 0
+        
+        # Reset minute counter if we're in a new minute
+        if last_minute != current_minute:
+            minute_count = 0
+            pipe.set(last_minute_key, current_minute)
+        
+        # Reset day counter if we're in a new day
+        if last_day != current_day:
+            day_count = 0
+            pipe.set(last_day_key, current_day)
 
         # Check limits
-        if minute_count >= self.rpm_limit:
-            raise HTTPException(status_code=429, detail="API rate limit exceeded (per minute)")
+        if minute_count >= model['rpm_limit'] or day_count >= model['rpd_limit']:
+            # Execute the pipeline to update timestamps even if we're over limit
+            if last_minute != current_minute or last_day != current_day:
+                pipe.execute()
+            return False  # Limit exceeded
         
-        if day_count >= self.rpd_limit:
-            raise HTTPException(status_code=429, detail="API rate limit exceeded (per day)")
-        
-        # Increment and set expiry
+        # Increment counters
         pipe.incr(minute_key)
         pipe.incr(day_key)
         
-        # Set expiry for minute counter (2 minutes to be safe)
+        # Set expiry - 2 minutes for minute counter, 48 hours for day counter
         pipe.expire(minute_key, 120)
-        
-        # Set expiry for day counter (48 hours to be safe)
         pipe.expire(day_key, 172800)
+        pipe.expire(last_minute_key, 120)
+        pipe.expire(last_day_key, 172800)
         
         pipe.execute()
         
@@ -68,34 +126,53 @@ class APIRateLimiter:
             self.last_backup = now
             
         return True
+    
+    def rotate_model(self):
+        """Rotate to the next available model"""
+        # Try models in the rotation queue
+        for _ in range(len(self.model_rotation_queue)):
+            next_model_index = self.model_rotation_queue.popleft()
+            self.model_rotation_queue.append(next_model_index)  # Put it at the end
+            
+            if self.check_and_increment(next_model_index):
+                self.current_model_index = next_model_index
+                print(f"Switched to model: {self.models[next_model_index]['name']}")
+                return True
         
+        # If all models are at their limit
+        return False
+    
     def create_backup(self):
-        """Create a backup of the current rate limiting data"""
+        """Create a backup of the current rate limiting data with minimal storage"""
         try:
-            # Get all rate limiter keys from Redis
-            minute_pattern = "api_limit:minute:*"
-            day_pattern = "api_limit:day:*"
-            
-            minute_keys = self.redis.keys(minute_pattern)
-            day_keys = self.redis.keys(day_pattern)
-            
             backup_data = {
                 "timestamp": datetime.now().isoformat(),
-                "minute_limits": {},
-                "day_limits": {}
+                "models": {}
             }
             
-            # Get all minute counters
-            for key in minute_keys:
-                value = self.redis.get(key)
-                if value:
-                    backup_data["minute_limits"][key] = int(value)
+            for _, model in enumerate(self.models):
+                model_name = model['name']
+                
+                # Get current counts
+                minute_key = f"rate:{model_name}:minute"
+                day_key = f"rate:{model_name}:day"
+                last_minute_key = f"rate:{model_name}:last_minute"
+                last_day_key = f"rate:{model_name}:last_day"
+                
+                minute_count = self.redis.get(minute_key)
+                day_count = self.redis.get(day_key)
+                last_minute = self.redis.get(last_minute_key)
+                last_day = self.redis.get(last_day_key)
+                
+                backup_data["models"][model_name] = {
+                    "minute_count": int(minute_count) if minute_count else 0,
+                    "day_count": int(day_count) if day_count else 0,
+                    "last_minute": last_minute if last_minute else None,
+                    "last_day": last_day if last_day else None
+                }
             
-            # Get all day counters
-            for key in day_keys:
-                value = self.redis.get(key)
-                if value:
-                    backup_data["day_limits"][key] = int(value)
+            # Add current model index
+            backup_data["current_model_index"] = self.current_model_index
             
             # Write to file
             with open(self.backup_file, 'w') as f:
@@ -107,10 +184,10 @@ class APIRateLimiter:
             print(f"Error creating rate limiter backup: {e}")
     
     def restore_from_backup(self):
-        """Restore rate limiting data from backup file if Redis is empty"""
+        """Restore rate limiting data from backup file with minimal storage"""
         try:
             # Check if Redis already has rate limiting data
-            has_data = bool(self.redis.keys("api_limit:*"))
+            has_data = bool(self.redis.keys("rate:*"))
             
             if not has_data and os.path.exists(self.backup_file):
                 with open(self.backup_file, 'r') as f:
@@ -120,24 +197,28 @@ class APIRateLimiter:
                 backup_time = datetime.fromisoformat(backup_data["timestamp"])
                 if datetime.now() - backup_time < timedelta(days=1):
                     pipe = self.redis.pipeline()
-                    
-                    # Restore minute counters that are still relevant
                     now = datetime.now()
                     current_minute = now.strftime('%Y-%m-%d-%H-%M')
-                    
-                    for key, value in backup_data["minute_limits"].items():
-                        key_time = key.split(":")[-1]
-                        if key_time == current_minute:  # Only restore current minute
-                            pipe.set(key, value)
-                            pipe.expire(key, 120)  # 2 minute expiry
-                    
-                    # Restore day counters
                     current_day = now.strftime('%Y-%m-%d')
-                    for key, value in backup_data["day_limits"].items():
-                        key_day = key.split(":")[-1]
-                        if key_day == current_day:  # Only restore current day
-                            pipe.set(key, value)
-                            pipe.expire(key, 172800)  # 48 hour expiry
+                    
+                    # Restore for each model
+                    for model_name, model_data in backup_data["models"].items():
+                        # Only restore if still in same minute/day
+                        if model_data["last_minute"] == current_minute:
+                            pipe.set(f"rate:{model_name}:minute", model_data["minute_count"])
+                            pipe.set(f"rate:{model_name}:last_minute", current_minute)
+                            pipe.expire(f"rate:{model_name}:minute", 120)
+                            pipe.expire(f"rate:{model_name}:last_minute", 120)
+                        
+                        if model_data["last_day"] == current_day:
+                            pipe.set(f"rate:{model_name}:day", model_data["day_count"])
+                            pipe.set(f"rate:{model_name}:last_day", current_day)
+                            pipe.expire(f"rate:{model_name}:day", 172800)
+                            pipe.expire(f"rate:{model_name}:last_day", 172800)
+                    
+                    # Set current model index
+                    if "current_model_index" in backup_data:
+                        self.current_model_index = backup_data["current_model_index"]
                     
                     pipe.execute()
                     print(f"Rate limiter data restored from backup created at {backup_data['timestamp']}")
@@ -159,8 +240,6 @@ REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
 REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
 REDIS_DB = int(os.environ.get('REDIS_DB', 0))
 
-client = genai.Client(api_key=os.environ.get('GEMINI_API'))
-chat = client.chats.create(model="gemini-2.0-flash")
 
 # Create FastAPI app
 app = FastAPI(
@@ -222,11 +301,6 @@ class ResultResponse(BaseModel):
     status: str
     message: str
 
-class HealthResponse(BaseModel):
-    status: str
-    version: str
-    models_loaded: bool
-
 class VoiceInputRequest(BaseModel):
     session_id: str
     audio_data: str  # Base64 encoded audio data
@@ -274,8 +348,7 @@ redis_client = redis.Redis(
 )
 
 api_rate_limiter = APIRateLimiter(
-    rpm_limit=15, 
-    rpd_limit=1500,
+    models_config=GEMINI_MODELS,
     redis_client=redis_client,
     backup_file="api_rate_limiter_backup.json"
 )
@@ -384,9 +457,19 @@ def update_session(session_id, state):
 # Initialize database on startup
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database on startup"""
+    """Initialize database nd Gemini models on startup"""
     # Initialize database
     init_db()
+
+    for model in GEMINI_MODELS:
+        try:
+            model["client"] = genai.Client(api_key=os.environ.get('GEMINI_API'))
+            print(f"Initialized model: {model['name']}")
+        except Exception as e:
+            print(f"Error initializing model {model['name']}: {e}")
+    
+    # Create a backup of the rate limiter state on startup
+    api_rate_limiter.create_backup()
     
 
 # API endpoints
@@ -433,53 +516,69 @@ async def get_question(session_id: str):
     domain = state.get('domain', 'thing')
     asked_questions = state.get('asked_questions', [])
     questions_asked = state['questions_asked']
+
+    # Check if we should add an AI-generated question
+    # We'll ensure every 3rd question (position 2, 5, 8) is AI-generated
+    use_ai_question = questions_asked % 3 == 2
     
-    # Try to use cached questions first
-    with get_db_connection() as conn:
-        with get_db_cursor(conn) as cursor:
-            # Look for appropriate cached questions for this domain and position
-            cursor.execute(
-                """SELECT dq.question_id, q.question_text 
-                FROM domain_questions dq
-                JOIN questions q ON dq.question_id = q.id
-                WHERE dq.domain = %s 
-                AND dq.position = %s
-                AND q.question_text NOT IN %s
-                ORDER BY dq.effectiveness DESC, dq.usage_count DESC
-                LIMIT 1""",
-                (domain, questions_asked, tuple(asked_questions) if asked_questions else ('',))
-            )
-            cached_question = cursor.fetchone()
-            
-            if cached_question:
-                # Use cached question
-                question_id = cached_question['question_id']
-                question_text = cached_question['question_text']
-                
-                # Update usage count
+    if not use_ai_question:
+        # Use cached questions
+        with get_db_connection() as conn:
+            with get_db_cursor(conn) as cursor:
+                # Look for appropriate cached questions for this domain and position
                 cursor.execute(
-                    "UPDATE domain_questions SET usage_count = usage_count + 1 WHERE question_id = %s AND domain = %s",
-                    (question_id, domain)
+                    """SELECT dq.question_id, q.question_text 
+                    FROM domain_questions dq
+                    JOIN questions q ON dq.question_id = q.id
+                    WHERE dq.domain = %s 
+                    AND dq.position = %s
+                    AND q.question_text NOT IN %s
+                    ORDER BY dq.effectiveness DESC, dq.usage_count DESC
+                    LIMIT 1""",
+                    (domain, questions_asked, tuple(asked_questions) if asked_questions else ('',))
                 )
-                conn.commit()
+                cached_question = cursor.fetchone()
                 
-                # Update state
-                state['asked_questions'] = state.get('asked_questions', []) + [question_text]
-                state['current_question_id'] = question_id
-                update_session(session_id, state)
-                
-                return {
-                    "session_id": session_id,
-                    "question_id": question_id,
-                    "question": question_text,
-                    "questions_asked": questions_asked,
-                    "should_guess": questions_asked >= 8
-                }
+                if cached_question:
+                    # Use cached question
+                    question_id = cached_question['question_id']
+                    question_text = cached_question['question_text']
+                    
+                    # Update usage count
+                    cursor.execute(
+                        "UPDATE domain_questions SET usage_count = usage_count + 1 WHERE question_id = %s AND domain = %s",
+                        (question_id, domain)
+                    )
+                    conn.commit()
+                    
+                    # Update state
+                    state['asked_questions'] = state.get('asked_questions', []) + [question_text]
+                    state['current_question_id'] = question_id
+                    update_session(session_id, state)
+                    
+                    return {
+                        "session_id": session_id,
+                        "question_id": question_id,
+                        "question": question_text,
+                        "questions_asked": questions_asked,
+                        "should_guess": questions_asked >= 8
+                    }
     
     # Try to generate using AI with proper fallbacks
     try:
         # Check API rate limits
-        api_rate_limiter.check_and_increment()
+        # Get current model
+        current_model = api_rate_limiter.get_current_model()
+        
+        # Check API rate limits
+        if not api_rate_limiter.check_and_increment():
+            # If current model is at limit, try to rotate
+            if not api_rate_limiter.rotate_model():
+                # If all models at limit, use emergency question
+                raise HTTPException(status_code=429, detail="All API rate limits exceeded")
+            
+            # Get the new current model after rotation
+            current_model = api_rate_limiter.get_current_model()
         
         # Use past Q&A to create context
         context = ""
@@ -493,7 +592,12 @@ async def get_question(session_id: str):
             prompt = f"Based on these previous questions and answers: {context} Ask a new yes/no question to identify a {domain}. The question must start with 'Is', 'Are', 'Does', 'Do', 'Can', 'Has', or 'Have'."
         
         try:
-            response = chat.send_message(prompt)
+            # Create a chat for the current model if it doesn't exist
+            if not current_model.get("chat"):
+                current_model["chat"] = current_model["client"].chats.create(model=current_model["name"])
+            
+            # Send the message to the current model's chat
+            response = current_model["chat"].send_message(prompt)
             question_text = response.text.strip()
             
             # Validate and clean up the question
@@ -680,56 +784,111 @@ async def submit_answer(request: AnswerRequest):
 # Use AI to make the guess
 @app.get("/api/make-guess/{session_id}", response_model=GuessResponse)
 async def make_guess(session_id: str):
-    """Use AI to make a specific guess of what the entity is based on the question history"""
+    """Use AI to make a specific guess of what the entity is based on the question history, with pattern matching"""
     state = get_session(session_id)
     if not state:
         raise HTTPException(status_code=404, detail="Session not found")
     
     domain = state.get('domain', 'thing')
 
-    # Create answer pattern for lookup
-    answer_pattern = {}
+    # Create answer pattern dictionary from current session
+    current_answer_pattern = {}
     for q_record in state['question_history']:
-        answer_pattern[q_record['question_id']] = q_record['answer']
+        current_answer_pattern[q_record['question_id']] = q_record['answer']
     
     # Try to find a similar pattern in previous successful games
     with get_db_connection() as conn:
         with get_db_cursor(conn) as cursor:
-            # Get successful guesses for this domain
+            # Get successful guesses for this domain with high success count
             cursor.execute(
                 """SELECT entity_name, success_count 
                 FROM domain_guesses 
-                WHERE domain = %s 
+                WHERE domain = %s AND success_count > 0
                 ORDER BY success_count DESC
-                LIMIT 5""",
+                LIMIT 10""",  # Get more candidates to find best match
                 (domain,)
             )
             cached_guesses = cursor.fetchall()
             
             if cached_guesses:
-                # Use the most successful guess
-                guess = cached_guesses[0]['entity_name']
+                best_match_score = 0
+                best_match_guess = None
                 
-                return {
-                    "session_id": session_id,
-                    "guess": guess,
-                    "questions_asked": state['questions_asked']
-                }
+                # For each potential cached guess
+                for guess_record in cached_guesses:
+                    entity_name = guess_record['entity_name']
+                    
+                    # Find games that correctly guessed this entity
+                    cursor.execute(
+                        """SELECT id 
+                        FROM game_history 
+                        WHERE target_entity = %s AND domain = %s AND was_correct = TRUE
+                        LIMIT 5""",
+                        (entity_name, domain)
+                    )
+                    successful_games = cursor.fetchall()
+                    
+                    # For each successful game
+                    for game in successful_games:
+                        game_id = game['id']
+                        
+                        # Get the Q&A pattern for this game
+                        cursor.execute(
+                            """SELECT question_id, answer
+                            FROM game_questions
+                            WHERE game_id = %s
+                            ORDER BY ask_order""",
+                            (game_id,)
+                        )
+                        game_questions = cursor.fetchall()
+                        
+                        # Create answer pattern dictionary
+                        game_pattern = {q['question_id']: q['answer'] for q in game_questions}
+                        
+                        # Calculate similarity score
+                        match_score = calculate_pattern_similarity(current_answer_pattern, game_pattern)
+                        
+                        # Update best match if this is better
+                        if match_score > best_match_score:
+                            best_match_score = match_score
+                            best_match_guess = entity_name
+                
+                # Use cached guess only if similarity is above threshold
+                if best_match_score >= 0.7 and best_match_guess:  # 70% similarity threshold
+                    print(f"Using cached guess '{best_match_guess}' with similarity score {best_match_score}")
+                    return {
+                        "session_id": session_id,
+                        "guess": best_match_guess,
+                        "questions_asked": state['questions_asked']
+                    }
     
-    # Create a comprehensive context from all Q&A history
+    # Create a comprehensive context from all Q&A history for AI model
     qa_context = ""
     if state['question_history']:
-        # Include all Q&A pairs as they're all important for making a specific guess
         for q_record in state['question_history']:
             qa_context += f"Q: {q_record['question']} A: {q_record['answer']}. "
     
-    # Use the question generator to make a specific guess
+    # Use the current model to make a specific guess
     try:
-        # Create a direct prompt that asks for a specific name
-        guess_prompt = f"Based on these yes/no questions and answers about a {domain}: {qa_context} What specific {domain} is it? Name the exact {domain}:"
+        # Check if we can use the current model
+        if not api_rate_limiter.check_and_increment():
+            # If current model is at limit, try to rotate
+            if not api_rate_limiter.rotate_model():
+                # If all models are at limit, use a fallback
+                raise Exception("All models at rate limit")
         
-        response = chat.send_message(guess_prompt)
-        guess = response.text
+        # Get the current model
+        current_model = api_rate_limiter.get_current_model()
+        
+        # Create a chat for the current model if it doesn't exist
+        if not current_model.get("chat"):
+            current_model["chat"] = current_model["client"].chats.create(model=current_model["name"])
+        
+        # Create a direct prompt that asks for a specific name
+        guess_prompt = f"Based on these yes/no questions and answers about a {domain}: {qa_context} What specific {domain} is it? Just Name the exact {domain}:"
+        
+        response = current_model["chat"].send_message(guess_prompt)
+        guess = response.text.strip()
 
     except Exception as e:
         print(f"Error making specific guess: {e}")
@@ -759,10 +918,35 @@ async def make_guess(session_id: str):
         "questions_asked": state['questions_asked']
     }
 
+def calculate_pattern_similarity(pattern1, pattern2):
+    """
+    Calculate similarity between two question-answer patterns
+    Returns a score between 0.0 and 1.0
+    """
+    # Find common question IDs
+    common_questions = set(pattern1.keys()) & set(pattern2.keys())
+    
+    if not common_questions:
+        return 0.0
+    
+    # Count matching answers for common questions
+    matches = sum(1 for q_id in common_questions if pattern1[q_id] == pattern2[q_id])
+    
+    # Calculate similarity score - weighted by number of questions
+    similarity = matches / len(common_questions)
+    
+    # Apply a bonus for having more common questions
+    coverage = len(common_questions) / max(len(pattern1), len(pattern2))
+    
+    # Weighted average of matching answers and coverage (70/30 split)
+    final_score = (similarity * 0.7) + (coverage * 0.3)
+    
+    return final_score
+
 # Submit result endpoint 
 @app.post("/api/submit-result", response_model=ResultResponse)
 async def submit_result(request: ResultRequest):
-    """Submit the final result of a game"""
+    """Submit the final result of a game and store question history"""
     session_id = request.session_id
     was_correct = request.was_correct
     actual_entity = request.actual_entity
@@ -773,10 +957,32 @@ async def submit_result(request: ResultRequest):
     if state:
         domain = state.get('domain', 'thing')
         
-        # Update question effectiveness based on result
+        # Store game history and questions for future pattern matching
         with get_db_connection() as conn:
             with get_db_cursor(conn) as cursor:
-                # Update question effectiveness for each asked question
+                # Calculate game duration
+                start_time = state.get('start_time', datetime.now().timestamp())
+                duration = int(datetime.now().timestamp() - start_time)
+                
+                # Store game history
+                cursor.execute(
+                    """INSERT INTO game_history 
+                    (id, user_id, target_entity, domain, was_correct, questions_count, duration) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    (session_id, state.get('user_id'), actual_entity, domain, was_correct, 
+                     state.get('questions_asked', 0), duration)
+                )
+                
+                # Store question history
+                for i, q_record in enumerate(state['question_history']):
+                    cursor.execute(
+                        """INSERT INTO game_questions 
+                        (game_id, question_id, answer, ask_order) 
+                        VALUES (%s, %s, %s, %s)""",
+                        (session_id, q_record['question_id'], q_record['answer'], i)
+                    )
+                
+                # Update question effectiveness based on result
                 for q_record in state['question_history']:
                     cursor.execute(
                         """UPDATE domain_questions 
@@ -820,14 +1026,19 @@ async def submit_result(request: ResultRequest):
                         existing_guess = cursor.fetchone()
                         
                         if existing_guess:
-                            # We guessed it before but failed this time
-                            pass
+                            # Increment fail count for this entity
+                            cursor.execute(
+                                """UPDATE domain_guesses 
+                                SET fail_count = fail_count + 1 
+                                WHERE id = %s""",
+                                (existing_guess['id'],)
+                            )
                         else:
                             # New entity we've never seen before
                             cursor.execute(
                                 """INSERT INTO domain_guesses 
-                                (domain, entity_name, success_count) 
-                                VALUES (%s, %s, 0)""",
+                                (domain, entity_name, success_count, fail_count) 
+                                VALUES (%s, %s, 0, 1)""",
                                 (domain, actual_entity)
                             )
                 
