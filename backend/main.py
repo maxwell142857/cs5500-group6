@@ -20,7 +20,7 @@ GEMINI_MODELS = [
         "name": "gemma-3-27b-it",  
         "rpm_limit": 30,
         "rpd_limit": 14400,
-        "client": None  
+        "client": None  # Will be initialized on startup
     },
     {
         "name": "gemini-2.0-flash",
@@ -375,7 +375,7 @@ def init_db():
             )
             ''')
             
-            # Game history table - removed users foreign key
+            # Game history table 
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS game_history (
                 id TEXT PRIMARY KEY,
@@ -737,7 +737,7 @@ async def submit_answer(request: AnswerRequest):
     """Submit an answer to a question"""
     session_id = request.session_id
     question_id = request.question_id
-    answer = request.answer
+    answer = request.answer.lower()
     
     # Get session state
     state = get_session(session_id)
@@ -930,7 +930,7 @@ def calculate_pattern_similarity(pattern1, pattern2):
         return 0.0
     
     # Count matching answers for common questions
-    matches = sum(1 for q_id in common_questions if pattern1[q_id] == pattern2[q_id])
+    matches = sum(1 for q_id in common_questions if pattern1[q_id].lower() == pattern2[q_id].lower())
     
     # Calculate similarity score - weighted by number of questions
     similarity = matches / len(common_questions)
@@ -1100,10 +1100,10 @@ async def process_voice_input(request: VoiceInputRequest):
             answer = 'no'
         else:
             answer = 'unknown'
-        
+
         # Get the current question
         current_question_id = state.get('current_question_id')
-        
+
         if not current_question_id:
             raise HTTPException(status_code=400, detail="No current question to answer")
         
