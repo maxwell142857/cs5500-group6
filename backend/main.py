@@ -283,6 +283,7 @@ class AnswerRequest(BaseModel):
 
 class AnswerResponse(BaseModel):
     session_id: str
+    answer: str
     should_guess: bool
     questions_asked: int
 
@@ -290,6 +291,7 @@ class GuessResponse(BaseModel):
     session_id: str
     guess: str
     questions_asked: int
+    message: Optional[str] = None
 
 class ResultRequest(BaseModel):
     session_id: str
@@ -367,7 +369,6 @@ def init_db():
                 id SERIAL PRIMARY KEY,
                 question_text TEXT UNIQUE,
                 feature TEXT,
-                information_gain REAL DEFAULT 0,
                 ask_count INTEGER DEFAULT 0,
                 success_rate REAL DEFAULT 0,
                 last_used TIMESTAMP,
@@ -561,15 +562,12 @@ async def get_question(session_id: str):
                         "question_id": question_id,
                         "question": question_text,
                         "questions_asked": questions_asked,
-                        "should_guess": questions_asked >= 8
+                        "should_guess": questions_asked >= 8,
+                        "message": f"Retrieved cached domain question. Domain: {domain}, Position: {questions_asked}."
                     }
     
     # Try to generate using AI with proper fallbacks
     try:
-        # Check API rate limits
-        # Get current model
-        current_model = api_rate_limiter.get_current_model()
-        
         # Check API rate limits
         if not api_rate_limiter.check_and_increment():
             # If current model is at limit, try to rotate
@@ -577,8 +575,8 @@ async def get_question(session_id: str):
                 # If all models at limit, use emergency question
                 raise HTTPException(status_code=429, detail="All API rate limits exceeded")
             
-            # Get the new current model after rotation
-            current_model = api_rate_limiter.get_current_model()
+        # Get the new current model after rotation
+        current_model = api_rate_limiter.get_current_model()
         
         # Use past Q&A to create context
         context = ""
@@ -640,7 +638,8 @@ async def get_question(session_id: str):
                     "question_id": question_id,
                     "question": question_text,
                     "questions_asked": questions_asked,
-                    "should_guess": questions_asked >= 8
+                    "should_guess": questions_asked >= 8,
+                    "message": f"Generated new question using AI model: {current_model['name']}. Domain: {domain}, Position: {questions_asked}."
                 }
         except Exception as e:
             print(f"Error generating question: {e}")
@@ -777,6 +776,7 @@ async def submit_answer(request: AnswerRequest):
     
     return {
         "session_id": session_id,
+        "answer": answer,
         "should_guess": should_guess,
         "questions_asked": state['questions_asked']
     }
@@ -859,7 +859,8 @@ async def make_guess(session_id: str):
                     return {
                         "session_id": session_id,
                         "guess": best_match_guess,
-                        "questions_asked": state['questions_asked']
+                        "questions_asked": state['questions_asked'],
+                        "message": f"Pattern match found: Using cached guess '{best_match_guess}' with similarity score {best_match_score}."
                     }
     
     # Create a comprehensive context from all Q&A history for AI model
@@ -915,7 +916,8 @@ async def make_guess(session_id: str):
     return {
         "session_id": session_id,
         "guess": guess,
-        "questions_asked": state['questions_asked']
+        "questions_asked": state['questions_asked'],
+        "message": f"Pattern match below threshold or not found. Using AI model {current_model['name']} to generate guess."
     }
 
 def calculate_pattern_similarity(pattern1, pattern2):
