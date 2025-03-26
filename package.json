@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-scripts": "^5.0.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.21.0",
@@ -23,5 +24,18 @@
     "eslint-plugin-react-refresh": "^0.4.19",
     "globals": "^15.15.0",
     "vite": "^6.2.0"
-  }
+  },
+  "description": "This is a simple web-based game inspired by Akinator. The user answers \"Yes\", \"No\", or \"Not Sure\" to a series of questions, and the AI attempts to guess what they are thinking.",
+  "main": "eslint.config.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maxwell142857/cs5500.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/maxwell142857/cs5500/issues"
+  },
+  "homepage": "https://github.com/maxwell142857/cs5500#readme"
 }

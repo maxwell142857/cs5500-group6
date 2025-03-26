@@ -1,68 +1,274 @@
-:root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
-
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
-}
-
-body {
+/* 🌌 Full-Screen Gradient Background (animated) */
+body, html {
   margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  font-family: 'Poppins', sans-serif;
+  background: linear-gradient(270deg, #000000, #001f3f, #003f7f, #0074d9);
+  background-size: 800% 800%;
+  animation: backgroundShift 20s ease infinite;
+  position: relative;
+}
+
+@keyframes backgroundShift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* 🎮 Game Container */
+.game-container {
   display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  height: 100vh;
+  position: relative;
+  z-index: 1;
 }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
+/* 🐶 Dog Container with Glow */
+.dog-container {
+  position: absolute;
+  left: 10%;
+  bottom: 25%;
+  width: 320px;
+  height: 320px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 50%;
+  box-shadow: 0 0 30px rgba(0, 173, 255, 0.5);
+  animation: floaty 3s ease-in-out infinite;
+  overflow: hidden;
+  z-index: 2;
 }
 
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
+.dog-gif {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+@keyframes floaty {
+  0% { transform: translateY(0px); }
+  50% { transform: translateY(-10px); }
+  100% { transform: translateY(0px); }
+}
+
+/* 🧊 Game Box */
+.game-box {
+  position: relative;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 16px;
+  padding: 30px 25px;
+  max-width: 380px;
+  width: 90%;
+  text-align: center;
+  backdrop-filter: blur(10px);
+  animation: fadeIn 0.6s ease;
+  z-index: 2;
+
+  /* 💡 Soft glow effect */
+  box-shadow:
+    0 0 20px rgba(0, 173, 255, 0.3),
+    0 0 40px rgba(0, 173, 255, 0.2),
+    0 0 60px rgba(0, 173, 255, 0.1);
+}
+
+@keyframes fadeIn {
+  0% { opacity: 0; transform: scale(0.9); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+/* 🔘 Answer Buttons */
+.button-group {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 15px;
+}
+
+.btn {
+  padding: 14px 32px;
+  font-size: 17px;
+  font-weight: 600;
+  border: none;
+  border-radius: 999px;
+  color: #fff;
   cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
+  text-transform: uppercase;
+  background: linear-gradient(135deg, #6dd5ed, #2193b0); /* Frosty silver-blue */
+  box-shadow: 0 4px 15px rgba(109, 213, 237, 0.4);
+  transition: all 0.35s ease-in-out;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
+
+.btn:hover {
+  transform: scale(1.07);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+}
+
+/* Optional Press Effect */
+.btn:active {
+  transform: scale(0.97);
+}
+
+
+
+/* 🔄 Play Again Button */
+.play-again {
+  margin-top: 24px;
+  padding: 12px 26px;
+  font-size: 15px;
+  font-weight: bold;
+  background: linear-gradient(to right, #ffb347, #ff6f61);
+  border: none;
+  border-radius: 30px;
+  color: white;
+  cursor: pointer;
+  box-shadow: 0 6px 14px rgba(255, 111, 97, 0.4);
+  transition: all 0.3s ease;
+}
+
+.play-again:hover {
+  transform: scale(1.08);
+  box-shadow: 0 8px 18px rgba(255, 111, 97, 0.5);
+}
+
+/* 🫧 Floating Bubbles */
+.fun-background {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.fun-background span {
+  position: absolute;
+  display: block;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.4);
+  animation: float 16s infinite ease-in-out;
+  filter: blur(3px);
+  box-shadow: 0 0 15px rgba(255, 255, 255, 0.3);
+}
+
+/* Bubble Positions: Add more as needed */
+.fun-background span:nth-child(1) { width: 40px; height: 40px; left: 5%; top: 10%; animation-delay: 0s; }
+.fun-background span:nth-child(2) { width: 60px; height: 60px; left: 80%; top: 20%; animation-delay: 1s; }
+.fun-background span:nth-child(3) { width: 50px; height: 50px; left: 25%; top: 60%; animation-delay: 2s; }
+.fun-background span:nth-child(4) { width: 70px; height: 70px; left: 90%; top: 70%; animation-delay: 3s; }
+.fun-background span:nth-child(5) { width: 30px; height: 30px; left: 10%; top: 80%; animation-delay: 4s; }
+.fun-background span:nth-child(6) { width: 45px; height: 45px; left: 60%; top: 15%; animation-delay: 5s; }
+.fun-background span:nth-child(7) { width: 50px; height: 50px; left: 40%; top: 35%; animation-delay: 6s; }
+.fun-background span:nth-child(8) { width: 65px; height: 65px; left: 65%; top: 60%; animation-delay: 7s; }
+.fun-background span:nth-child(9) { width: 35px; height: 35px; left: 75%; top: 5%; animation-delay: 8s; }
+.fun-background span:nth-child(10){ width: 55px; height: 55px; left: 30%; top: 90%; animation-delay: 9s; }
+.fun-background span:nth-child(11){ width: 48px; height: 48px; left: 50%; top: 10%; animation-delay: 10s; }
+.fun-background span:nth-child(12){ width: 38px; height: 38px; left: 20%; top: 50%; animation-delay: 11s; }
+.fun-background span:nth-child(13){ width: 58px; height: 58px; left: 35%; top: 20%; animation-delay: 12s; }
+.fun-background span:nth-child(14){ width: 43px; height: 43px; left: 15%; top: 65%; animation-delay: 13s; }
+.fun-background span:nth-child(15){ width: 68px; height: 68px; left: 85%; top: 40%; animation-delay: 14s; }
+.fun-background span:nth-child(16){ width: 36px; height: 36px; left: 45%; top: 75%; animation-delay: 15s; }
+.fun-background span:nth-child(17){ width: 52px; height: 52px; left: 70%; top: 90%; animation-delay: 16s; }
+.fun-background span:nth-child(18){ width: 48px; height: 48px; left: 55%; top: 5%;  animation-delay: 17s; }
+.fun-background span:nth-child(19){ width: 40px; height: 40px; left: 65%; top: 25%; animation-delay: 18s; }
+.fun-background span:nth-child(20){ width: 30px; height: 30px; left: 5%;  top: 35%; animation-delay: 19s; }
+
+/* Floating motion for bubbles */
+@keyframes float {
+  0%, 100% {
+    opacity: 0.8;
+    transform: translateY(0) rotate(0deg);
   }
-  a:hover {
-    color: #747bff;
+  50% {
+    opacity: 1;
+    transform: translateY(-25px) rotate(180deg);
   }
-  button {
-    background-color: #f9f9f9;
+}
+/* 🚀 Refined Intro Screen */
+.intro-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  height: 100vh;
+  width: 100vw;
+  z-index: 2;
+  position: relative;
+  padding: 20px;
+  backdrop-filter: brightness(1.2) blur(2px); /* Slight lift */
+  background: rgba(255, 255, 255, 0.05); /* Soft light overlay */
+  animation: fadeIn 0.8s ease;
+}
+
+.intro-title {
+  font-size: 60px;
+  font-weight: 900;
+  color: #eafaff;
+  text-shadow: 0 0 16px #00eaff, 0 0 30px #4facfe;
+  animation: pulseGlow 2s infinite alternate;
+}
+
+.intro-subtitle {
+  font-size: 24px;
+  color: #d0f0ff;
+  margin-top: 18px;
+  font-style: italic;
+  text-shadow: 0 0 8px rgba(0, 242, 254, 0.3);
+}
+
+@keyframes pulseGlow {
+  from {
+    text-shadow: 0 0 16px #00f2fe, 0 0 30px #4facfe;
+  }
+  to {
+    text-shadow: 0 0 30px #00f2fe, 0 0 60px #4facfe;
+  }
+}
+
+.start-button {
+  margin-top: 36px;
+  padding: 18px 48px;
+  font-size: 20px;
+  font-weight: bold;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #00f2fe, #4facfe);
+  color: white;
+  cursor: pointer;
+  box-shadow: 0 0 18px rgba(0, 242, 254, 0.5);
+  transition: all 0.3s ease;
+  animation: bounceIn 1s ease forwards;
+}
+
+.start-button:hover {
+  transform: scale(1.08);
+  box-shadow: 0 0 30px rgba(0, 255, 255, 0.7);
+}
+
+.start-button:active {
+  transform: scale(0.96);
+}
+
+@keyframes bounceIn {
+  0% {
+    transform: scale(0.5);
+    opacity: 0;
+  }
+  80% {
+    transform: scale(1.1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
   }
 }
