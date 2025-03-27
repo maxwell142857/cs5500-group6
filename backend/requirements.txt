@@ -1,8 +1,9 @@
 fastapi
 pydantic
 typing
-psycopg2
-contextlib
+# Replaced psycopg2 with psycopg2-binary for local setup (faster dev, avoids pg_config issues)
+psycopg2-binary
+# removed contextlib
 pydub
 google-genai
 gtts
