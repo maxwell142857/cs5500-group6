@@ -6,8 +6,8 @@ from datetime import datetime, timedelta
 from psycopg2.extras import DictCursor
 from contextlib import contextmanager
 from pydub import AudioSegment
-# from google import genai
-import google.generativeai as genai
+from google import genai
+# import google.generativeai as genai
 from gtts import gTTS 
 from collections import deque
 
