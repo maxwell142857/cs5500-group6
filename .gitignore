@@ -13,6 +13,9 @@ dist
 dist-ssr
 *.local
 
+backend/api_rate_limiter_backup.json
+package-lock.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
