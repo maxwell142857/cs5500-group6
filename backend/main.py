@@ -519,54 +519,6 @@ async def get_question(session_id: str):
     asked_questions = state.get('asked_questions', [])
     questions_asked = state['questions_asked']
 
-    # Check if we should add an AI-generated question
-    # We'll ensure every 3rd question (position 2, 5, 8) is AI-generated
-    use_ai_question = questions_asked % 3 == 2
-    
-    if not use_ai_question:
-        # Use cached questions
-        with get_db_connection() as conn:
-            with get_db_cursor(conn) as cursor:
-                # Look for appropriate cached questions for this domain and position
-                cursor.execute(
-                    """SELECT dq.question_id, q.question_text 
-                    FROM domain_questions dq
-                    JOIN questions q ON dq.question_id = q.id
-                    WHERE dq.domain = %s 
-                    AND dq.position = %s
-                    AND q.question_text NOT IN %s
-                    ORDER BY dq.effectiveness DESC, dq.usage_count DESC
-                    LIMIT 1""",
-                    (domain, questions_asked, tuple(asked_questions) if asked_questions else ('',))
-                )
-                cached_question = cursor.fetchone()
-                
-                if cached_question:
-                    # Use cached question
-                    question_id = cached_question['question_id']
-                    question_text = cached_question['question_text']
-                    
-                    # Update usage count
-                    cursor.execute(
-                        "UPDATE domain_questions SET usage_count = usage_count + 1 WHERE question_id = %s AND domain = %s",
-                        (question_id, domain)
-                    )
-                    conn.commit()
-                    
-                    # Update state
-                    state['asked_questions'] = state.get('asked_questions', []) + [question_text]
-                    state['current_question_id'] = question_id
-                    update_session(session_id, state)
-                    
-                    return {
-                        "session_id": session_id,
-                        "question_id": question_id,
-                        "question": question_text,
-                        "questions_asked": questions_asked,
-                        "should_guess": questions_asked >= 8,
-                        "message": f"Retrieved cached domain question. Domain: {domain}, Position: {questions_asked}."
-                    }
-    
     # Try to generate using AI with proper fallbacks
     try:
         # Check API rate limits
@@ -651,7 +603,65 @@ async def get_question(session_id: str):
         else:
             raise e
     except Exception as e:
-        print(f"Unexpected error in get_question: {e}")
+        print(f"Unexpected error using AI model: {current_model['name']} to generate a new question. Error: {e}")
+    
+    try:
+        with get_db_connection() as conn:
+            with get_db_cursor(conn) as cursor:
+                # Find a good question for this domain that hasn't been asked in this session
+                cursor.execute(
+                    """SELECT dq.question_id, q.question_text, dq.effectiveness 
+                    FROM domain_questions dq
+                    JOIN questions q ON dq.question_id = q.id
+                    WHERE dq.domain = %s 
+                    AND q.question_text NOT IN %s
+                    ORDER BY dq.effectiveness DESC, RANDOM()
+                    LIMIT 1""",
+                    (domain, tuple(asked_questions) if asked_questions else ('',))
+                )
+                cached_question = cursor.fetchone()
+                
+                if cached_question:
+                    # Use cached question
+                    question_id = cached_question['question_id']
+                    question_text = cached_question['question_text']
+                    effectiveness = cached_question.get('effectiveness', 0)
+                    
+                    # Update usage count
+                    cursor.execute(
+                        """UPDATE domain_questions 
+                        SET usage_count = usage_count + 1, 
+                            position = CASE WHEN position IS NULL THEN %s ELSE position END
+                        WHERE question_id = %s AND domain = %s""",
+                        (questions_asked, question_id, domain)
+                    )
+                    
+                    # Update last_used timestamp
+                    cursor.execute(
+                        "UPDATE questions SET last_used = NOW() WHERE id = %s",
+                        (question_id,)
+                    )
+                    
+                    conn.commit()
+                    
+                    # Update state
+                    state['asked_questions'] = state.get('asked_questions', []) + [question_text]
+                    state['current_question_id'] = question_id
+                    update_session(session_id, state)
+                    
+                    return {
+                        "session_id": session_id,
+                        "question_id": question_id,
+                        "question": question_text,
+                        "questions_asked": questions_asked,
+                        "should_guess": questions_asked >= 8,
+                        "message": f"Using cached question (ID: {question_id}, effectiveness: {effectiveness:.2f}) as fallback after AI generation failed."
+                    }
+                
+                # If no cached question found, then generate emergency question 
+                print("No suitable cached question found, moving to emergency question generation")
+    except Exception as e:
+        print(f"Error fetching cached question: {e}")
     
     # FALLBACK: Use emergency question for any issue
     emergency_question = create_emergency_question(domain, len(asked_questions))

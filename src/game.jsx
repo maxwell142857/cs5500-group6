@@ -79,15 +79,16 @@ export default function Game() {
   
       const res = await fetch(`http://127.0.0.1:8000/api/get-question/${sessionId}`);
       const data = await res.json();
-      setQuestion(data.question);
-      setQuestionId(data.question_id);
-      setProgress(data.questions_asked);
 
       if (data.should_guess) {
         const guessRes = await fetch(`http://127.0.0.1:8000/api/make-guess/${sessionId}`);
         const guessData = await guessRes.json();
         setResult(guessData.guess);
         setIsFinished(true);
+      } else {
+        setQuestion(data.question);
+        setQuestionId(data.question_id);
+        setProgress(data.questions_asked);
       }
     } catch (error) {
       console.error("Error submitting answer:", error);
@@ -98,6 +99,7 @@ export default function Game() {
   const resetGame = () => {
     setSessionId(null);
     setQuestionId(null);
+    setQuestion(null)
     setResult(null);
     setProgress(0);
     setIsFinished(false);
