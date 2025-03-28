@@ -586,9 +586,9 @@ async def get_question(session_id: str):
         
         # Generate a new question using AI
         if len(state['question_history']) == 0:
-            prompt = f"Ask a single yes/no question to identify a {domain}. The question must start with 'Is', 'Are', 'Does', 'Do', 'Can', 'Has', or 'Have'."
+            prompt = f"Ask a single yes/no question to identify or to guess a {domain}. The question must start with 'Is', 'Are', 'Does', 'Do', 'Can', 'Has', or 'Have'."
         else:
-            prompt = f"Based on these previous questions and answers: {context} Ask a new yes/no question to identify a {domain}. The question must start with 'Is', 'Are', 'Does', 'Do', 'Can', 'Has', or 'Have'."
+            prompt = f"Based on these previous questions and answers: {context} Ask a new yes/no question to identify or to guess a {domain}. The question must start with 'Is', 'Are', 'Does', 'Do', 'Can', 'Has', or 'Have'."
         
         try:
             # Create a chat for the current model if it doesn't exist
