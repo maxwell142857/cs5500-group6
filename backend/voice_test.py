@@ -3,7 +3,7 @@ from pydub import AudioSegment
 from pydub.playback import play
 
 # Server URL
-BASE_URL = "http://localhost:8000/"  # Change to your server address
+BASE_URL = "http://localhost:8000/"  
 
 # 1. Start a game session
 def start_game():
