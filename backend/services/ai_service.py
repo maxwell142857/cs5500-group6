@@ -1,6 +1,4 @@
-import random
 from google import genai
-import os
 
 from config import GEMINI_API_KEY, GEMINI_MODELS
 from services.rate_limiter import APIRateLimiter

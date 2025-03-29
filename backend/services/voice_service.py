@@ -1,6 +1,5 @@
-import io
-import base64
-import speech_recognition as sr
+import io, base64, speech_recognition as sr
+
 from pydub import AudioSegment
 from gtts import gTTS
 

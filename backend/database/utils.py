@@ -1,6 +1,4 @@
-import json
-import redis
-from datetime import datetime
+import json, redis
 
 from config import REDIS_HOST, REDIS_PORT, REDIS_DB, SESSION_TIMEOUT
 

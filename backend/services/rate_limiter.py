@@ -1,9 +1,7 @@
-import json
-import os
+import json, os
+
 from datetime import datetime, timedelta
 from collections import deque
-
-from database.utils import redis_client
 
 class APIRateLimiter:
     def __init__(self, models_config, redis_client=None, backup_file="rate_limiter_backup.json"):

@@ -1,5 +1,5 @@
-import json
 import uuid
+
 from datetime import datetime
 
 from database import get_db_connection, get_db_cursor
@@ -177,16 +177,25 @@ def submit_answer(session_id, question_id, answer):
         return None, "Session not found"
     
     # Get question text
-    with get_db_connection() as conn:
-        with get_db_cursor(conn) as cursor:
-            cursor.execute(
-                "SELECT question_text FROM questions WHERE id = %s",
-                (question_id,)
-            )
-            result = cursor.fetchone()
-            if not result:
-                return None, "Question not found"
-            question_text = result['question_text']
+    question_text = None
+    current_question_id = state.get('current_question_id')
+    if current_question_id == question_id and 'asked_questions' in state:
+        # The last asked question should be the current one
+        if state['asked_questions']:
+            question_text = state['asked_questions'][-1]
+
+    # If not in Redis, fetch from postgreSQL database        
+    if not question_text:
+        with get_db_connection() as conn:
+            with get_db_cursor(conn) as cursor:
+                cursor.execute(
+                    "SELECT question_text FROM questions WHERE id = %s",
+                    (question_id,)
+                )
+                result = cursor.fetchone()
+                if not result:
+                    return None, "Question not found"
+                question_text = result['question_text']
     
     # Add to question history - store both question ID and full text for context
     question_record = {
