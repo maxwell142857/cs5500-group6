@@ -1,6 +1,7 @@
-import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+
+from contextlib import asynccontextmanager
 
 from models.pydantic_models import (
     StartGameRequest, StartGameResponse, 
@@ -10,18 +11,30 @@ from models.pydantic_models import (
 )
 from database.schemas import init_db
 from database.utils import redis_client, get_session, update_session
-from services.ai_service import initialize_ai_models
+from services.ai_service import initialize_ai_models, api_rate_limiter
 from services.game_service import (
     start_new_game, get_next_question, submit_answer,
     make_guess, submit_game_result
 )
 from services.voice_service import process_voice_input, generate_voice_output
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup operations
+    init_db()
+    initialize_ai_models()
+    
+    yield  # This is where the application runs
+    
+    # Shutdown operations
+    api_rate_limiter.create_backup()
+
 # Create FastAPI app
 app = FastAPI(
     title="Dynamic Learning Akinator API",
     description="A domain-agnostic Akinator-style guessing game that learns from user interactions",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Add CORS middleware
@@ -32,15 +45,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Initialize on startup
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database and AI models on startup"""
-    # Initialize database
-    init_db()
-    # Initialize AI models
-    initialize_ai_models()
 
 # API endpoints
 @app.post("/api/start-game", response_model=StartGameResponse)
@@ -194,10 +198,3 @@ async def api_voice_output(request: VoiceOutputRequest):
         raise HTTPException(status_code=500, detail=error)
     
     return {"audio_data": audio_data, "mime_type": "audio/mp3"}
-
-# Shutdown event
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Backup state on shutdown"""
-    from services.ai_service import api_rate_limiter
-    api_rate_limiter.create_backup()
