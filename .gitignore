@@ -13,7 +13,13 @@ dist
 dist-ssr
 *.local
 
+backend/__pycache__
 backend/api_rate_limiter_backup.json
+backend/database/__pycache__
+backend/models/__pycache__
+backend/services/__pycache__
+backend/utils/__pycache__
+backend/.env
 package-lock.json
 
 # Editor directories and files

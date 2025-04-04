@@ -6,6 +6,8 @@ import ResultBox from "./components/ResultBox";
 import "./styles/index.css";
 
 export default function Game() {
+  const [sessionId, setSessionId] = useState(null);
+  const [questionId, setQuestionId] = useState(null);
   const [showIntro, setShowIntro] = useState(true);
   const [startTransition, setStartTransition] = useState(false);
   const [question, setQuestion] = useState("Is your character real?");
@@ -13,46 +15,96 @@ export default function Game() {
   const [isFinished, setIsFinished] = useState(false);
   const [result, setResult] = useState(null);
 
-  const handleStartGame = () => {
-    setStartTransition(true); // trigger fade out
+  const handleStartGame = async () => {
+    setStartTransition(true);
     setTimeout(() => {
-      setShowIntro(false); // hide intro after animation
-      setStartTransition(false); // reset
-    }, 600); // match fadeOut duration
+      setStartTransition(false);
+    }, 600);
+  
+    try {
+      const res = await fetch("http://127.0.0.1:8000/api/start-game", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          domain: "person",
+          user_id: 1,
+          voice_enabled: false,
+          voice_language: "en"
+        }),
+      });
+  
+      const data = await res.json();
+  
+      if (!res.ok) {
+        console.error("Start game failed:", data);
+        return;
+      }
+  
+      setSessionId(data.session_id);
+  
+      const qRes = await fetch(`http://127.0.0.1:8000/api/get-question/${data.session_id}`);
+      const qData = await qRes.json();
+      setQuestion(qData.question);
+      setQuestionId(qData.question_id);  // store the question_id
+      setProgress(qData.questions_asked);
+  
+      setShowIntro(false);
+    } catch (error) {
+      console.error("Network error during start game:", error);
+    }
   };
+  
+  
   const happyGifs = ["/assets/happy1.gif", "/assets/happy2.gif"];
   const sadGifs = ["/assets/sad1.gif", "/assets/sad2.gif"];
   const notSureGifs = ["/assets/notsure1.gif", "/assets/notsure2.gif"];
   const [dogGif, setDogGif] = useState("/assets/notsure1.gif");
 
-  const handleAnswer = (answer) => {
-    if (answer === "yes") {
-      const random = Math.floor(Math.random() * happyGifs.length);
-      setDogGif(happyGifs[random]);
-    } else if (answer === "no") {
-      const random = Math.floor(Math.random() * sadGifs.length);
-      setDogGif(sadGifs[random]);
-    } else {
-      const random = Math.floor(Math.random() * notSureGifs.length);
-      setDogGif(notSureGifs[random]);
-    }
+  const handleAnswer = async (answer) => {
+    const gifList = answer === "yes" ? happyGifs : answer === "no" ? sadGifs : notSureGifs;
+    setDogGif(gifList[Math.floor(Math.random() * gifList.length)]);
+  
+    try {
+      await fetch("http://127.0.0.1:8000/api/submit-answer", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          session_id: sessionId,
+          question_id: questionId,
+          answer: answer,
+        }),
+      });
+  
+      const res = await fetch(`http://127.0.0.1:8000/api/get-question/${sessionId}`);
+      const data = await res.json();
 
-    if (progress >= 80) {
-      setIsFinished(true);
-      setResult("Your character is Sherlock Holmes! 🕵️‍♂️");
-    } else {
-      setProgress(progress + 20);
-      setQuestion(progress === 60 ? "Is your character fictional?" : "Is your character famous?");
+      if (data.should_guess) {
+        const guessRes = await fetch(`http://127.0.0.1:8000/api/make-guess/${sessionId}`);
+        const guessData = await guessRes.json();
+        setResult(guessData.guess);
+        setIsFinished(true);
+      } else {
+        setQuestion(data.question);
+        setQuestionId(data.question_id);
+        setProgress(data.questions_asked);
+      }
+    } catch (error) {
+      console.error("Error submitting answer:", error);
     }
   };
+  
 
   const resetGame = () => {
-    setQuestion("Is your character real?");
+    setSessionId(null);
+    setQuestionId(null);
+    setQuestion(null)
+    setResult(null);
     setProgress(0);
     setIsFinished(false);
-    setResult(null);
     setDogGif("/assets/notsure1.gif");
-    setShowIntro(true); // Bring back intro screen when playing again
+    handleStartGame();
   };
 
   return (

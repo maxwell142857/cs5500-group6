@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+pydantic
+typing
+psycopg2-binary
+pydub
+google-genai
+gtts
+uuid
+SpeechRecognition
+redis
