@@ -1,8 +1,8 @@
 export default function ResultBox({ result }) {
   return (
     <div className="result-box">
-      <h1>🎉 I guess you were thinking of:</h1>
-      <h2>{result}</h2>
+      <h2 className="result-text">🎯 I guess you were thinking of:</h2>
+      <p className="result-text">{result}</p>
     </div>
   );
 }
