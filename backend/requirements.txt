@@ -7,7 +7,5 @@ psycopg2-binary
 pydub
 google-genai
 gtts
-json
-uuid
 SpeechRecognition
 redis
