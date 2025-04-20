@@ -5,7 +5,8 @@ import QuestionBox from "./components/QuestionBox";
 import ResultBox from "./components/ResultBox";
 import "./styles/index.css";
 
-const API_URL = process.env.REACT_APP_API_URL || "https://rare-cubist-455223-v2.uc.r.appspot.com";
+// const API_URL = process.env.REACT_APP_API_URL || "https://rare-cubist-455223-v2.uc.r.appspot.com";
+const API_URL = process.env.REACT_APP_API_URL || "https://akinator-api-209010176466.us-central1.run.app";
 
 // Base URL for assets
 const BASE_URL = import.meta.env.BASE_URL || '/';
