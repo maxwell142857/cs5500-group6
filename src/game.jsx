@@ -8,6 +8,9 @@ import "./styles/index.css";
 // API URL - Change this to your Google Cloud backend URL for production
 const API_URL = process.env.REACT_APP_API_URL || "http://127.0.0.1:8000";
 
+// Base URL for assets
+const BASE_URL = import.meta.env.BASE_URL || '/';
+
 const DOMAINS = [
   { id: "person", label: "Person" },
   { id: "animal", label: "Animal" },
@@ -109,10 +112,10 @@ export default function Game() {
     }
   };
 
-  const happyGifs = ["/assets/happy1.gif", "/assets/happy2.gif"];
-  const sadGifs = ["/assets/sad1.gif", "/assets/sad2.gif"];
-  const notSureGifs = ["/assets/notsure1.gif", "/assets/notsure2.gif"];
-  const [dogGif, setDogGif] = useState("/assets/notsure1.gif");
+  const happyGifs = [`${BASE_URL}assets/happy1.gif`, `${BASE_URL}assets/happy2.gif`];
+  const sadGifs = [`${BASE_URL}assets/sad1.gif`, `${BASE_URL}assets/sad2.gif`];
+  const notSureGifs = [`${BASE_URL}assets/notsure1.gif`, `${BASE_URL}assets/notsure2.gif`];
+  const [dogGif, setDogGif] = useState(`${BASE_URL}assets/notsure1.gif`);
 
   const handleAnswer = async (answer) => {
     setError(null);
@@ -199,7 +202,7 @@ export default function Game() {
     setProgress(0);
     setIsFinished(false);
     setError(null);
-    setDogGif("/assets/notsure1.gif");
+    setDogGif(`${BASE_URL}assets/notsure1.gif`);
     setShowFeedback(false);
     setCorrectAnswer("");
     setShowIntro(true);
