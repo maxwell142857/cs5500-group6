@@ -34,3 +34,5 @@ package-lock.json
 *.sw?
 backend/__pycache__/*
 backend/api_rate_limiter_backup.json
+.env
+.env.*
