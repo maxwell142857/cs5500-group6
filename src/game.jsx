@@ -1,9 +1,12 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import ButtonGroup from "./components/ButtonGroup";
 import ProgressBar from "./components/ProgressBar";
 import QuestionBox from "./components/QuestionBox";
 import ResultBox from "./components/ResultBox";
 import "./styles/index.css";
+
+// API URL - Change this to your Google Cloud backend URL for production
+const API_URL = process.env.REACT_APP_API_URL || "http://127.0.0.1:8000";
 
 const DOMAINS = [
   { id: "person", label: "Person" },
@@ -42,7 +45,7 @@ export default function Game() {
     }, 600);
   
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/start-game", {
+      const res = await fetch(`${API_URL}/api/start-game`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -71,7 +74,7 @@ export default function Game() {
 
   const getNextQuestion = async (sid) => {
     try {
-      const qRes = await fetch(`http://127.0.0.1:8000/api/get-question/${sid}`);
+      const qRes = await fetch(`${API_URL}/api/get-question/${sid}`);
       if (!qRes.ok) {
         const errorData = await qRes.json();
         throw new Error(errorData.detail || "Failed to get question");
@@ -118,7 +121,7 @@ export default function Game() {
     setDogGif(gifList[Math.floor(Math.random() * gifList.length)]);
   
     try {
-      const answerRes = await fetch("http://127.0.0.1:8000/api/submit-answer", {
+      const answerRes = await fetch(`${API_URL}/api/submit-answer`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -138,7 +141,7 @@ export default function Game() {
       const answerData = await answerRes.json();
 
       if (answerData.should_guess) {
-        const guessRes = await fetch(`http://127.0.0.1:8000/api/make-guess/${sessionId}`);
+        const guessRes = await fetch(`${API_URL}/api/make-guess/${sessionId}`);
         if (!guessRes.ok) {
           const errorData = await guessRes.json();
           throw new Error(errorData.detail || "Failed to make guess");
@@ -160,7 +163,7 @@ export default function Game() {
   const handleGuessResult = async (wasCorrect) => {
     setIsLoading(true);
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/submit-result", {
+      const res = await fetch(`${API_URL}/api/submit-result`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
